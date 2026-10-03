@@ -1,84 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<!-- ZIULEX V4 PROFISSIONAL - SYNC AUTOMATICO TOTAL -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.4/dist/umd/supabase.min.js"></script>
 <script>
-console.log('🔧 Iniciando vínculo permanente ZIULEX...');
-const ZIULEX_URL="https://bfqkcsgdnpxrwkyupls.supabase.co";
-const ZIULEX_KEY="sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
-localStorage.setItem('ziulex_supabase_url', ZIULEX_URL);
-localStorage.setItem('ziulex_supabase_key', ZIULEX_KEY);
-window.ZIULEX_SUPABASE_URL=ZIULEX_URL;
-window.ZIULEX_SUPABASE_KEY=ZIULEX_KEY;
+(function(){
+  const SB_URL="https://bfqkcsgdnpxrwkyupls.supabase.co";
+  const SB_KEY="sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
+  // Salva permanente
+  localStorage.setItem('ziulex_supabase_url', SB_URL);
+  localStorage.setItem('ziulex_supabase_key', SB_KEY);
+  
+  const client = supabase.createClient(SB_URL, SB_KEY);
+  window.ziulexSupabase = client;
+  console.log('✅ ZIULEX PROFISSIONAL CONECTADO - SYNC AUTOMATICO ATIVO');
 
-// Cria cliente robusto
-let sb;
-try {
-  sb = window.supabase.createClient(ZIULEX_URL, ZIULEX_KEY);
-  window.ziulexSupabase=sb;
-  console.log('✅ Supabase client criado', ZIULEX_URL);
-} catch(e){ console.error('Erro criar client',e); }
+  // --- UPLOAD AUTOMATICO ---
+  async function autoUpload(table, obj) {
+    if(!obj?.id) return;
+    const map = {
+      clientes: {id:String(obj.id), nome:obj.nome||obj.name||'', cpf:obj.cpf||'', email:obj.email||'', telefone:obj.telefone||obj.phone||'', escritorio:obj.escritorio||'Matriz'},
+      processos: {id:String(obj.id), cnj:obj.cnj||'', cliente_nome:obj.cliente||obj.cliente_nome||'', status:obj.status||'Ativo', escritorio:'Matriz'},
+      agenda: {id:String(obj.id), titulo:obj.titulo||obj.title||'', data:obj.data||new Date().toISOString().slice(0,10), hora:obj.hora||'', tipo:obj.tipo||'', cliente_nome:obj.cliente||''},
+      financeiro: {id:String(obj.id), cliente_nome:obj.cliente||obj.cliente_nome||'Geral', descricao:obj.descricao||'', valor:Number(obj.valor||0), vencimento:obj.vencimento||new Date().toISOString().slice(0,10), status:obj.status||'Pendente', tipo:obj.tipo||'Receita'}
+    }[table];
+    if(!map) return;
+    const {error} = await client.from(table).upsert(map, {onConflict:'id'});
+    if(error) console.error('Erro autoUpload', table, error);
+    else console.log('☁️ Auto-sync up:', table, map.nome||map.titulo||map.id);
+  }
 
-async function subirCliente(c) {
-  try {
-    console.log('⬆️ Subindo cliente pro Supabase:', c);
-    const payload = { id: c.id, nome: c.nome||c.name||'Sem nome', cpf: c.cpf||'', email: c.email||'', telefone: c.telefone||c.phone||'', escritorio: c.escritorio||'Matriz' };
-    const r = await fetch(ZIULEX_URL+'/rest/v1/clientes', {
-      method:'POST',
-      headers:{'apikey':ZIULEX_KEY,'Authorization':'Bearer '+ZIULEX_KEY,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
-      body: JSON.stringify(payload)
-    });
-    const txt = await r.text();
-    console.log('Resposta subir:', r.status, txt);
-    if(!r.ok) console.error('Falha subir', txt);
-    return r.ok;
-  } catch(e){ console.error('Erro subir',e); return false; }
-}
+  // --- DOWNLOAD AUTOMATICO ---
+  async function autoDownload() {
+    try {
+      const {data} = await client.from('clientes').select('*').limit(200);
+      if(!data?.length) return;
+      let local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]');
+      const localIds = new Set(local.map(x=>String(x.id)));
+      let changed = false;
+      // Adiciona novos do cloud
+      data.forEach(d=>{
+        if(!localIds.has(String(d.id))) {
+          local.push({id:d.id, nome:d.nome, name:d.nome, cpf:d.cpf, email:d.email, telefone:d.telefone, phone:d.telefone, escritorio:d.escritorio});
+          changed = true;
+        }
+      });
+      // Atualiza existentes se nome mudou no cloud (tempo real)
+      data.forEach(d=>{
+        const idx = local.findIndex(x=>String(x.id)===String(d.id));
+        if(idx>=0 && local[idx].nome!==d.nome) { local[idx].nome=d.nome; local[idx].name=d.nome; changed=true; }
+      });
+      if(changed) {
+        localStorage.setItem('ziulex_clientes', JSON.stringify(local));
+        // Força recarregar lista se a função existir no seu ziulex
+        try { if(window.renderClientes) window.renderClientes(); if(window.carregarClientes) window.carregarClientes(); } catch{}
+        console.log('☁️ Auto-sync down:', data.length, 'clientes sincronizados');
+      }
+    } catch(e){ console.error(e); }
+  }
 
-async function baixarClientes() {
-  try {
-    console.log('⬇️ Baixando clientes do Supabase...');
-    const r = await fetch(ZIULEX_URL+'/rest/v1/clientes?select=*', { headers:{'apikey':ZIULEX_KEY,'Authorization':'Bearer '+ZIULEX_KEY} });
-    const data = await r.json();
-    console.log('Clientes no Supabase:', data.length, data);
-    if(!Array.isArray(data)) return;
-    let local = [];
-    try{ local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]'); }catch{}
-    let ids = new Set(local.map(x=>x.id));
-    let novos = data.filter(d=>!ids.has(d.id)).map(d=>({id:d.id, nome:d.nome, cpf:d.cpf, email:d.email, telefone:d.telefone, phone:d.telefone, escritorio:d.escritorio, name:d.nome}));
-    if(novos.length) {
-      const merged = [...local, ...novos];
-      localStorage.setItem('ziulex_clientes', JSON.stringify(merged));
-      console.log('✅', novos.length, 'clientes novos baixados do Supabase! Recarregue a lista de clientes se já estiver aberta.');
-      // tenta atualizar UI se existir
-      if(window.atualizarListaClientes) window.atualizarListaClientes();
-    }
-  } catch(e){ console.error('Erro baixar',e); }
-}
-
-// Intercepta TODAS as formas de salvar
-(function() {
-  const originalSet = localStorage.setItem.bind(localStorage);
-  localStorage.setItem = function(k,v) {
-    originalSet(k,v);
-    if(k==='ziulex_clientes') {
-      console.log('📝 ziulex_clientes alterado no localStorage');
+  // Intercepta qualquer salvamento - 100% automático
+  const origSet = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(k,v){
+    origSet(k,v);
+    if(['ziulex_clientes','ziulex_processos','ziulex_agenda','ziulex_financeiro'].includes(k)) {
       try {
         const arr = JSON.parse(v);
-        if(Array.isArray(arr)) {
-          // Pega só os últimos 3 para subir
-          arr.slice(-3).forEach(c=>{ if(c.id) subirCliente(c); });
+        if(Array.isArray(arr) && arr.length) {
+          const last = arr[arr.length-1];
+          const tableMap = {'ziulex_clientes':'clientes','ziulex_processos':'processos','ziulex_agenda':'agenda','ziulex_financeiro':'financeiro'};
+          if(last?.id) autoUpload(tableMap[k], last);
+          // Se for array inteiro novo (edição), sobe todos em background
+          if(arr.length>1 && k==='ziulex_clientes') {
+            arr.slice(-5).forEach(c=>autoUpload('clientes', c));
+          }
         }
-      } catch(e){}
+      } catch{}
     }
   };
-})();
 
-// Baixa ao iniciar e a cada 5 segundos (para teste em 2 navegadores)
-setTimeout(baixarClientes, 2000);
-setInterval(baixarClientes, 5000);
-console.log('✅ Vínculo permanente ATIVO - sync a cada 5s');
+  // Realtime - quando outro dispositivo salva, baixa na hora
+  try {
+    client.channel('ziulex-realtime-v4')
+      .on('postgres_changes', {event:'*', schema:'public', table:'clientes'}, ()=>{ console.log('🔴 Realtime: outro dispositivo alterou clientes'); autoDownload(); })
+      .on('postgres_changes', {event:'*', schema:'public', table:'processos'}, ()=>autoDownload())
+      .subscribe();
+    console.log('🔴 Realtime ativo - sync instantâneo');
+  } catch(e){ console.log('Realtime fallback para polling'); }
+
+  // Polling de segurança a cada 3s + inicial
+  setTimeout(autoDownload, 1500);
+  setInterval(autoDownload, 3000);
+  
+  // Auto-upload de dados antigos que ainda não foram pra nuvem (primeira vez)
+  setTimeout(async ()=>{
+    try {
+      const local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]');
+      if(local.length) {
+        console.log('☁️ Enviando', local.length, 'clientes locais para nuvem (primeira sync)...');
+        for(let c of local.slice(0,50)) await autoUpload('clientes', c);
+      }
+    } catch{}
+  }, 3000);
+})();
 </script>
+<!-- FIM SYNC PROFISSIONAL -->
 
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -778,5 +805,10 @@ console.log('ZIULEX FINAL 100% - 25 itens - Completo');
 })();
 </script>
 
-<div id="zbadge" style="position:fixed;bottom:10px;right:10px;background:#16a34a;color:#fff;padding:8px 12px;border-radius:20px;font-size:11px;z-index:999999;font-family:monospace;">SYNC ATIVO - F12 p/ ver logs</div></body>
+
+<div id="ziulex-cloud" style="position:fixed;bottom:14px;right:14px;z-index:999999;background:#0f172a;color:#fff;padding:7px 12px;border-radius:20px;font-family:Inter,system-ui;font-size:11px;display:flex;align-items:center;gap:8px;box-shadow:0 6px 20px rgba(0,0,0,0.25);">
+  <span style="width:7px;height:7px;background:#22c55e;border-radius:50%;box-shadow:0 0 0 3px rgba(34,197,94,0.25);"></span>
+  <span style="opacity:0.9;">Nuvem conectada • Sync automático</span>
+</div>
+</body>
 </html>
