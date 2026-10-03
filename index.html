@@ -1,68 +1,84 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
-<!-- ZIULEX SUPABASE VINCULADO PERMANENTEMENTE -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// VINCULAÇÃO PERMANENTE - NÃO PEDE MAIS
-const ZIULEX_SUPABASE_URL = "https://bfqkcsgdnpxrwkyupls.supabase.co";
-const ZIULEX_SUPABASE_KEY = "sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
-localStorage.setItem('ziulex_supabase_url', ZIULEX_SUPABASE_URL);
-localStorage.setItem('ziulex_supabase_key', ZIULEX_SUPABASE_KEY);
-localStorage.setItem('SUPABASE_URL', ZIULEX_SUPABASE_URL);
-localStorage.setItem('SUPABASE_KEY', ZIULEX_SUPABASE_KEY);
-window.ZIULEX_SUPABASE_URL = ZIULEX_SUPABASE_URL;
-window.ZIULEX_SUPABASE_KEY = ZIULEX_SUPABASE_KEY;
-console.log('✅ ZIULEX vinculado permanente ao Supabase', ZIULEX_SUPABASE_URL);
+console.log('🔧 Iniciando vínculo permanente ZIULEX...');
+const ZIULEX_URL="https://bfqkcsgdnpxrwkyupls.supabase.co";
+const ZIULEX_KEY="sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
+localStorage.setItem('ziulex_supabase_url', ZIULEX_URL);
+localStorage.setItem('ziulex_supabase_key', ZIULEX_KEY);
+window.ZIULEX_SUPABASE_URL=ZIULEX_URL;
+window.ZIULEX_SUPABASE_KEY=ZIULEX_KEY;
 
-// Cliente global
-window.ziulexSupabase = supabase.createClient(ZIULEX_SUPABASE_URL, ZIULEX_SUPABASE_KEY);
+// Cria cliente robusto
+let sb;
+try {
+  sb = window.supabase.createClient(ZIULEX_URL, ZIULEX_KEY);
+  window.ziulexSupabase=sb;
+  console.log('✅ Supabase client criado', ZIULEX_URL);
+} catch(e){ console.error('Erro criar client',e); }
 
-// Auto-sync bidirecional permanente
+async function subirCliente(c) {
+  try {
+    console.log('⬆️ Subindo cliente pro Supabase:', c);
+    const payload = { id: c.id, nome: c.nome||c.name||'Sem nome', cpf: c.cpf||'', email: c.email||'', telefone: c.telefone||c.phone||'', escritorio: c.escritorio||'Matriz' };
+    const r = await fetch(ZIULEX_URL+'/rest/v1/clientes', {
+      method:'POST',
+      headers:{'apikey':ZIULEX_KEY,'Authorization':'Bearer '+ZIULEX_KEY,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
+      body: JSON.stringify(payload)
+    });
+    const txt = await r.text();
+    console.log('Resposta subir:', r.status, txt);
+    if(!r.ok) console.error('Falha subir', txt);
+    return r.ok;
+  } catch(e){ console.error('Erro subir',e); return false; }
+}
+
+async function baixarClientes() {
+  try {
+    console.log('⬇️ Baixando clientes do Supabase...');
+    const r = await fetch(ZIULEX_URL+'/rest/v1/clientes?select=*', { headers:{'apikey':ZIULEX_KEY,'Authorization':'Bearer '+ZIULEX_KEY} });
+    const data = await r.json();
+    console.log('Clientes no Supabase:', data.length, data);
+    if(!Array.isArray(data)) return;
+    let local = [];
+    try{ local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]'); }catch{}
+    let ids = new Set(local.map(x=>x.id));
+    let novos = data.filter(d=>!ids.has(d.id)).map(d=>({id:d.id, nome:d.nome, cpf:d.cpf, email:d.email, telefone:d.telefone, phone:d.telefone, escritorio:d.escritorio, name:d.nome}));
+    if(novos.length) {
+      const merged = [...local, ...novos];
+      localStorage.setItem('ziulex_clientes', JSON.stringify(merged));
+      console.log('✅', novos.length, 'clientes novos baixados do Supabase! Recarregue a lista de clientes se já estiver aberta.');
+      // tenta atualizar UI se existir
+      if(window.atualizarListaClientes) window.atualizarListaClientes();
+    }
+  } catch(e){ console.error('Erro baixar',e); }
+}
+
+// Intercepta TODAS as formas de salvar
 (function() {
-  async function syncUp(k, data) {
-    try {
-      if(k==='ziulex_clientes') {
-        for(let c of data) await window.ziulexSupabase.from('clientes').upsert({id:c.id, nome:c.nome||c.name, cpf:c.cpf||'', email:c.email||'', telefone:c.telefone||c.phone||'', escritorio:'Matriz', created_at:new Date().toISOString()},{onConflict:'id'});
-      }
-      if(k==='ziulex_processos') {
-        for(let p of data) await window.ziulexSupabase.from('processos').upsert({id:p.id, cnj:p.cnj||'', cliente_nome:p.cliente||p.cliente_nome||'', status:p.status||'Ativo', escritorio:'Matriz'},{onConflict:'id'});
-      }
-      if(k==='ziulex_agenda') {
-        for(let a of data) await window.ziulexSupabase.from('agenda').upsert({id:a.id, titulo:a.titulo||a.title||'', data:a.data||new Date().toISOString().slice(0,10), hora:a.hora||'', tipo:a.tipo||''},{onConflict:'id'});
-      }
-      if(k==='ziulex_financeiro') {
-        for(let f of data) await window.ziulexSupabase.from('financeiro').upsert({id:f.id, descricao:f.descricao||'', valor:Number(f.valor||0), cliente_nome:f.cliente||'Geral', status:f.status||'Pendente', tipo:f.tipo||'Receita'},{onConflict:'id'});
-      }
-    } catch(e){ console.log('sync erro',e) }
-  }
-
-  async function syncDown() {
-    try {
-      const {data:cli} = await window.ziulexSupabase.from('clientes').select('*');
-      if(cli && cli.length) {
-        let local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]');
-        let ids = new Set(local.map(x=>x.id));
-        let novos = cli.filter(c=>!ids.has(c.id)).map(c=>({id:c.id, nome:c.nome, cpf:c.cpf, email:c.email, telefone:c.telefone, escritorio:c.escritorio}));
-        if(novos.length) { localStorage.setItem('ziulex_clientes', JSON.stringify([...local, ...novos])); console.log('Baixados do Supabase:',novos.length,'clientes'); }
-      }
-    } catch(e){}
-  }
-
-  const _set = localStorage.setItem.bind(localStorage);
+  const originalSet = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(k,v) {
-    _set(k,v);
-    if(['ziulex_clientes','ziulex_processos','ziulex_agenda','ziulex_financeiro'].includes(k)) {
-      try{ let d=JSON.parse(v); if(Array.isArray(d) && d.length) syncUp(k,d); }catch{}
+    originalSet(k,v);
+    if(k==='ziulex_clientes') {
+      console.log('📝 ziulex_clientes alterado no localStorage');
+      try {
+        const arr = JSON.parse(v);
+        if(Array.isArray(arr)) {
+          // Pega só os últimos 3 para subir
+          arr.slice(-3).forEach(c=>{ if(c.id) subirCliente(c); });
+        }
+      } catch(e){}
     }
   };
-
-  setTimeout(syncDown, 2000);
-  setInterval(syncDown, 30000);
 })();
+
+// Baixa ao iniciar e a cada 5 segundos (para teste em 2 navegadores)
+setTimeout(baixarClientes, 2000);
+setInterval(baixarClientes, 5000);
+console.log('✅ Vínculo permanente ATIVO - sync a cada 5s');
 </script>
-<!-- FIM VINCULO PERMANENTE -->
 
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -762,5 +778,5 @@ console.log('ZIULEX FINAL 100% - 25 itens - Completo');
 })();
 </script>
 
-</body>
+<div id="zbadge" style="position:fixed;bottom:10px;right:10px;background:#16a34a;color:#fff;padding:8px 12px;border-radius:20px;font-size:11px;z-index:999999;font-family:monospace;">SYNC ATIVO - F12 p/ ver logs</div></body>
 </html>
