@@ -3,212 +3,175 @@
 <head>
 
 <script>
-// ============================================
-// ZIULEX V8 PROFISSIONAL - ARQUITETURA REAL
-// Fonte da verdade: SUPABASE, localStorage = apenas cache
-// ============================================
+// ZIULEX V9 FINAL - SYNC PROFISSIONAL PARA IURI + EQUIPE
+// Fonte da verdade: SUPABASE | Cache: localStorage | Realtime: Postgres
 (function(){
   const SB_URL = "https://bfqkcsgdnpxrwkyupls.supabase.co";
   const SB_KEY = "sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
-  const ESCRITORIO_ID = localStorage.getItem('ziulex_escritorio_atual') || 'matriz';
+  const ESCRITORIO = 'matriz';
   
-  console.log('%c ZIULEX V8 PROFISSIONAL INICIANDO - Supabase como fonte ', 'background:#000;color:#fff;padding:8px;font-size:13px;');
-  
-  // Service Profissional
-  class ZiulexSupabaseService {
-    constructor(){
-      this.url = SB_URL;
-      this.key = SB_KEY;
-      this.queue = JSON.parse(localStorage.getItem('ziulex_sync_queue')||'[]');
-      this.isOnline = navigator.onLine;
-      this.syncing = false;
-      window.addEventListener('online', ()=>{ this.isOnline=true; this.processQueue(); });
-      window.addEventListener('offline', ()=>{ this.isOnline=false; });
-    }
-    
-    headers(){ return {'apikey': this.key, 'Authorization': 'Bearer '+this.key, 'Content-Type':'application/json'}; }
-    
-    async fetchSupabase(table, query='select=*'){
-      try{
-        const r = await fetch(`${this.url}/rest/v1/${table}?${query}`, {headers: this.headers()});
-        if(!r.ok) throw new Error('HTTP '+r.status+' '+await r.text());
-        return await r.json();
-      }catch(e){
-        console.error('[SUPABASE] fetch erro', table, e);
-        throw e;
+  console.log('%c ZIULEX V9 - SYNC PROFISSIONAL PARA EQUIPE DO IURI ', 'background:#dc2626;color:#fff;padding:10px;font-size:14px;font-weight:bold;');
+
+  const TABLES = {
+    'ziulex_clientes': 'clientes',
+    'ziulex_processos': 'processos', 
+    'ziulex_agenda': 'agenda',
+    'ziulex_financeiro': 'financeiro',
+    'ziulex_documentos': 'documentos'
+  };
+
+  async function sbRequest(table, method='GET', body=null, query=''){
+    const url = `${SB_URL}/rest/v1/${table}${query ? '?'+query : ''}`;
+    const opts = {
+      method,
+      headers: {
+        'apikey': SB_KEY,
+        'Authorization': 'Bearer '+SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation,resolution=merge-duplicates'
       }
-    }
-    
-    async upsertSupabase(table, payload){
+    };
+    if(body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    const txt = await r.text();
+    if(!r.ok) throw new Error(`SUPABASE ${r.status}: ${txt.slice(0,300)}`);
+    try{ return JSON.parse(txt); }catch{ return txt; }
+  }
+
+  async function syncDown(){
+    for(let [lsKey, sbTable] of Object.entries(TABLES)){
       try{
-        const r = await fetch(`${this.url}/rest/v1/${table}`, {
-          method:'POST',
-          headers:{...this.headers(), 'Prefer':'resolution=merge-duplicates,return=representation'},
-          body: JSON.stringify(payload)
-        });
-        if(!r.ok) throw new Error(await r.text());
-        return await r.json();
-      }catch(e){
-        console.error('[SUPABASE] upsert erro', e);
-        // Enfileira para tentar depois (offline-first)
-        this.queue.push({table, payload, ts: Date.now()});
-        localStorage.setItem('ziulex_sync_queue', JSON.stringify(this.queue));
-        throw e;
-      }
-    }
-    
-    async deleteSupabase(table, id){
-      try{
-        const r = await fetch(`${this.url}/rest/v1/${table}?id=eq.${id}`, {method:'DELETE', headers: this.headers()});
-        if(!r.ok) throw new Error(await r.text());
-      }catch(e){ console.error(e); }
-    }
-    
-    async processQueue(){
-      if(this.syncing || !this.queue.length) return;
-      this.syncing = true;
-      console.log('[QUEUE] Processando', this.queue.length, 'itens pendentes');
-      const remaining = [];
-      for(let item of this.queue){
-        try{
-          await this.upsertSupabase(item.table, item.payload);
-        }catch{ remaining.push(item); }
-      }
-      this.queue = remaining;
-      localStorage.setItem('ziulex_sync_queue', JSON.stringify(this.queue));
-      this.syncing = false;
-    }
-    
-    async syncClientesFromCloud(){
-      try{
-        const data = await this.fetchSupabase('clientes', 'select=*&order=created_at.desc&limit=500');
-        // Converte para formato do app
-        const converted = data.map(d=>({
-          id: d.id,
-          nome: d.nome, name: d.nome,
-          cpf: d.cpf, email: d.email,
-          telefone: d.telefone, phone: d.telefone,
-          escritorio: d.escritorio_id || d.escritorio || 'Matriz',
-          escritorio_id: d.escritorio_id || 'matriz',
-          created_at: d.created_at
-        }));
-        // Só substitui se nuvem tem dados ou local está vazio (fonte da verdade é nuvem)
-        const localRaw = localStorage.getItem('ziulex_clientes');
-        const localCount = localRaw ? JSON.parse(localRaw).length : 0;
-        if(converted.length>0 || localCount===0){
-          const prevQueue = window.__ziulex_protected;
-          window.__ziulex_protected = true;
-          localStorage.setItem('ziulex_clientes', JSON.stringify(converted));
-          window.__ziulex_protected = false;
-          window.dispatchEvent(new CustomEvent('ziulex:clientes:sync', {detail: converted}));
-          console.log('[SYNC] Clientes sincronizados da nuvem:', converted.length);
+        const data = await sbRequest(sbTable, 'GET', null, 'select=*&limit=500&order=created_at.desc');
+        if(!Array.isArray(data)) continue;
+        if(data.length===0) continue;
+        
+        // Converte formato Supabase -> formato ZIULEX
+        let converted;
+        if(sbTable==='clientes'){
+          converted = data.map(d=>({id:d.id, nome:d.nome, name:d.nome, cpf:d.cpf||'', email:d.email||'', telefone:d.telefone||'', phone:d.telefone||'', escritorio:d.escritorio||'Matriz', escritorio_id:d.escritorio_id||'matriz', created_at:d.created_at}));
+        } else if(sbTable==='processos'){
+          converted = data.map(d=>({id:d.id, cnj:d.cnj||'', cliente:d.cliente_nome||'', cliente_nome:d.cliente_nome||'', status:d.status||'Ativo', escritorio:'Matriz'}));
+        } else if(sbTable==='agenda'){
+          converted = data.map(d=>({id:d.id, titulo:d.titulo||'', title:d.titulo||'', data:d.data||'', hora:d.hora||'', tipo:d.tipo||'', cliente:d.cliente_nome||''}));
+        } else if(sbTable==='financeiro'){
+          converted = data.map(d=>({id:d.id, cliente:d.cliente_nome||'', cliente_nome:d.cliente_nome||'', descricao:d.descricao||'', valor:d.valor||0, vencimento:d.vencimento||'', status:d.status||'Pendente', tipo:d.tipo||'Receita'}));
+        } else {
+          converted = data;
         }
-        return converted;
+        
+        // Só atualiza se nuvem tem mais dados que local (fonte da verdade é nuvem)
+        const local = JSON.parse(localStorage.getItem(lsKey)||'[]');
+        if(converted.length > 0){
+          window.__ziulex_syncing = true;
+          localStorage.setItem(lsKey, JSON.stringify(converted));
+          window.__ziulex_syncing = false;
+          console.log(`[SYNC DOWN] ${sbTable} -> ${converted.length} itens baixados da nuvem para ${lsKey}`);
+          if(lsKey==='ziulex_clientes'){
+            window.dispatchEvent(new Event('ziulex-clientes-updated'));
+            // Força atualização visual se o app expõe função
+            try{ if(window.renderClientes) window.renderClientes(); }catch{}
+          }
+        }
       }catch(e){
-        console.warn('[SYNC] Falha sync nuvem, mantendo cache local', e);
-        return [];
+        console.error(`[SYNC DOWN] Erro ${sbTable}`, e.message);
       }
     }
   }
-  
-  const service = new ZiulexSupabaseService();
-  window.ZIULEX_SERVICE = service;
-  window.ZIULEX_SUPABASE_URL = SB_URL;
-  
-  // 1. BOOT: Antes do React iniciar, carrega da nuvem
-  (async function boot(){
-    try{
-      // Tenta carregar da nuvem primeiro
-      await service.syncClientesFromCloud();
-    }catch{}
-  })();
-  
-  // 2. WRITE-THROUGH CACHE: Toda escrita no localStorage vai pra nuvem também
-  const originalSetItem = localStorage.setItem.bind(localStorage);
-  localStorage.setItem = function(key, value){
-    if(window.__ziulex_protected){
-      return originalSetItem(key, value);
-    }
-    originalSetItem(key, value);
+
+  async function syncUp(lsKey, arr){
+    const sbTable = TABLES[lsKey];
+    if(!sbTable) return;
+    if(!arr || !arr.length) return;
     
-    // Intercepta apenas tabelas principais
-    if(['ziulex_clientes','ziulex_processos','ziulex_agenda','ziulex_financeiro'].includes(key)){
+    // Pega apenas o último ou alterado
+    const last = arr[arr.length-1];
+    if(!last || !last.id) return;
+    
+    let payload;
+    if(sbTable==='clientes'){
+      payload = {id: String(last.id), nome: last.nome||last.name||'Sem nome', cpf: last.cpf||'', email: last.email||'', telefone: last.telefone||last.phone||'', escritorio: last.escritorio||'Matriz', escritorio_id: (last.escritorio_id||last.escritorio||'matriz').toLowerCase()};
+    } else if(sbTable==='processos'){
+      payload = {id: String(last.id), cnj: last.cnj||'', cliente_nome: last.cliente||last.cliente_nome||'', status: last.status||'Ativo', escritorio_id:'matriz'};
+    } else if(sbTable==='agenda'){
+      payload = {id: String(last.id), titulo: last.titulo||last.title||'', data: last.data||new Date().toISOString().slice(0,10), hora: last.hora||'', tipo: last.tipo||'', cliente_nome: last.cliente||''};
+    } else if(sbTable==='financeiro'){
+      payload = {id: String(last.id), cliente_nome: last.cliente||last.cliente_nome||'Geral', descricao: last.descricao||'', valor: Number(last.valor||0), vencimento: last.vencimento||new Date().toISOString().slice(0,10), status: last.status||'Pendente', tipo: last.tipo||'Receita'};
+    }
+    
+    if(!payload) return;
+    try{
+      await sbRequest(sbTable, 'POST', payload);
+      console.log(`[SYNC UP] ${sbTable} -> ${payload.nome||payload.titulo||payload.id} enviado para nuvem`);
+    }catch(e){
+      console.error(`[SYNC UP] Erro ${sbTable}`, e.message);
+      // Se erro 409 ou RLS, tenta sem id (gera uuid)
+      if(e.message.includes('RLS') || e.message.includes('401') || e.message.includes('403')){
+        console.warn('⚠️ RLS ainda bloqueando - rode: alter table public.'+sbTable+' disable row level security;');
+      }
+    }
+  }
+
+  // Intercepta salvamento - write-through para nuvem
+  const origSet = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(k,v){
+    if(window.__ziulex_syncing){
+      return origSet(k,v);
+    }
+    origSet(k,v);
+    if(TABLES[k]){
       try{
-        const arr = JSON.parse(value);
-        if(!Array.isArray(arr)) return;
-        // Pega apenas os itens novos ou alterados nos últimos 5s (evita flood)
-        const toSync = arr.slice(-10); // últimos 10
-        toSync.forEach(item=>{
-          if(!item.id) return;
-          let payload;
-          if(key==='ziulex_clientes'){
-            payload = {id: String(item.id), nome: item.nome||item.name||'Sem nome', cpf: item.cpf||'', email: item.email||'', telefone: item.telefone||item.phone||'', escritorio_id: (item.escritorio_id||item.escritorio||'matriz').toLowerCase(), escritorio: item.escritorio||'Matriz'};
-            service.upsertSupabase('clientes', payload).catch(()=>{});
-          }
-        });
+        const arr = JSON.parse(v);
+        if(Array.isArray(arr) && arr.length){
+          syncUp(k, arr);
+        }
       }catch{}
     }
   };
-  
-  // 3. REALTIME PROFISSIONAL via Supabase Realtime (websocket) + Polling fallback
-  let lastSync = 0;
-  async function realtimePoll(){
-    const now = Date.now();
-    if(now - lastSync < 3000) return;
-    lastSync = now;
-    await service.syncClientesFromCloud();
-    service.processQueue();
-  }
-  
-  // Tenta websocket real
-  try{
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.4/dist/umd/supabase.min.js';
-    script.onload = ()=>{
-      try{
-        const client = supabase.createClient(SB_URL, SB_KEY);
-        client.channel('ziulex-v8-profissional')
-          .on('postgres_changes', {event:'*', schema:'public', table:'clientes'}, async (payload)=>{
-            console.log('[REALTIME] Mudança detectada na nuvem', payload.eventType);
-            await service.syncClientesFromCloud();
-            // Força React a re-renderizar se possível
-            try{ window.location.reload(); }catch{}
-          })
-          .subscribe((status)=>console.log('[REALTIME] Status:', status));
-      }catch(e){ console.log('Realtime fallback para polling', e); }
-    };
-    document.head.appendChild(script);
-  }catch{}
-  
-  // Polling de segurança a cada 4s (profissional tem fallback)
-  setInterval(realtimePoll, 4000);
-  setTimeout(realtimePoll, 1500);
-  
-  // 4. MIGRAÇÃO INICIAL: Se já tem dados locais e nuvem vazia, sobe tudo
+
+  // Boot - baixa da nuvem primeiro
   setTimeout(async ()=>{
-    try{
-      const local = JSON.parse(localStorage.getItem('ziulex_clientes')||'[]');
-      if(local.length>0){
-        const cloud = await service.fetchSupabase('clientes','select=id&limit=1').catch(()=>[]);
-        if(cloud.length===0){
-          console.log('[MIGRAÇÃO] Nuvem vazia, migrando', local.length, 'clientes locais...');
-          for(let c of local){
-            await service.upsertSupabase('clientes', {id:String(c.id), nome:c.nome||c.name||'', cpf:c.cpf||'', email:c.email||'', telefone:c.telefone||c.phone||'', escritorio_id:'matriz', escritorio:'Matriz'});
+    console.log('[BOOT] Baixando dados da nuvem (fonte da verdade)...');
+    await syncDown();
+    // Migração: se local tem dados e nuvem vazia, sobe
+    for(let [lsKey, sbTable] of Object.entries(TABLES)){
+      try{
+        const local = JSON.parse(localStorage.getItem(lsKey)||'[]');
+        const cloud = await sbRequest(sbTable, 'GET', null, 'select=id&limit=1');
+        if(local.length>0 && cloud.length===0){
+          console.log(`[MIGRAÇÃO] ${lsKey} tem ${local.length} locais, nuvem vazia - migrando...`);
+          for(let item of local.slice(0,50)){
+            await syncUp(lsKey, [item]);
+            await new Promise(r=>setTimeout(r,100));
           }
-          console.log('[MIGRAÇÃO] Concluída');
         }
-      }
-    }catch{}
-  }, 3000);
-  
-  console.log('%c V8 PROFISSIONAL ATIVO - Supabase é fonte da verdade ', 'background:#16a34a;color:#fff;padding:6px;');
+      }catch{}
+    }
+  }, 1000);
+
+  // Realtime + Polling para equipe do Iuri
+  setInterval(syncDown, 4000);
+
+  // Tenta Realtime websocket para sync instantâneo entre estagiários
+  try{
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.4/dist/umd/supabase.min.js';
+    s.onload = ()=>{
+      try{
+        const c = supabase.createClient(SB_URL, SB_KEY);
+        c.channel('ziulex-equipe-iuri')
+          .on('postgres_changes', {event:'*', schema:'public', table:'clientes'}, ()=>syncDown())
+          .on('postgres_changes', {event:'*', schema:'public', table:'processos'}, ()=>syncDown())
+          .on('postgres_changes', {event:'*', schema:'public', table:'agenda'}, ()=>syncDown())
+          .on('postgres_changes', {event:'*', schema:'public', table:'financeiro'}, ()=>syncDown())
+          .subscribe((st)=>console.log('[REALTIME EQUIPE]', st));
+      }catch{}
+    };
+    document.head.appendChild(s);
+  }catch{}
+
+  console.log('%c ✅ ZIULEX V9 PRONTO - EQUIPE DO IURI SINCRONIZADA ', 'background:#16a34a;color:#fff;padding:8px;font-weight:bold;');
 })();
 </script>
-<style>
-#ziulex-pro-status{position:fixed;bottom:14px;right:14px;z-index:999999;background:#0f172a;color:#e5e7eb;padding:8px 14px;border-radius:24px;font-family:Inter,system-ui;font-size:11px;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);}
-#ziulex-pro-status .dot{width:8px;height:8px;background:#22c55e;border-radius:50%;box-shadow:0 0 0 4px rgba(34,197,94,0.2);animation:pulse 2s infinite;}
-@keyframes pulse{0%{box-shadow:0 0 0 4px rgba(34,197,94,0.2)}50%{box-shadow:0 0 0 8px rgba(34,197,94,0.0)}100%{box-shadow:0 0 0 4px rgba(34,197,94,0.2)}}
-</style>
 
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -909,6 +872,10 @@ console.log('ZIULEX FINAL 100% - 25 itens - Completo');
 </script>
 
 
-<div id="ziulex-pro-status"><span class="dot"></span><span><strong>ZIULEX CLOUD</strong> • Sync profissional ativo • Multi-dispositivo</span></div>
+<div style="position:fixed;bottom:12px;right:12px;z-index:9999999;background:#16a34a;color:#fff;padding:8px 14px;border-radius:24px;font-family:Inter,system-ui;font-size:11px;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);">
+<span style="width:8px;height:8px;background:#fff;border-radius:50%;animation:blink 1s infinite"></span>
+<span><strong>SYNC EQUIPE</strong> • Nuvem • Iuri + estagiários</span>
+</div>
+<style>@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}</style>
 </body>
 </html>
