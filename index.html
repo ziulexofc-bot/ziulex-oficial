@@ -3,173 +3,118 @@
 <head>
 
 <script>
-// ZIULEX V9 FINAL - SYNC PROFISSIONAL PARA IURI + EQUIPE
-// Fonte da verdade: SUPABASE | Cache: localStorage | Realtime: Postgres
 (function(){
-  const SB_URL = "https://bfqkcsgdnpxrwkyupls.supabase.co";
-  const SB_KEY = "sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
-  const ESCRITORIO = 'matriz';
+  const SB_URL="https://bfqkcsgdnpxrwkyupls.supabase.co";
+  const SB_KEY="sb_publishable_5NeAhUNLMZ-UNya14PT_Tw_G9Q4qx0F";
+  const TABLES={'ziulex_clientes':'clientes','ziulex_processos':'processos','ziulex_agenda':'agenda','ziulex_financeiro':'financeiro'};
   
-  console.log('%c ZIULEX V9 - SYNC PROFISSIONAL PARA EQUIPE DO IURI ', 'background:#dc2626;color:#fff;padding:10px;font-size:14px;font-weight:bold;');
+  function log(msg, err){
+    let el=document.getElementById('ziulex-log');
+    if(!el){ el=document.createElement('div'); el.id='ziulex-log'; el.style.cssText='position:fixed;top:10px;left:10px;z-index:9999999;background:rgba(0,0,0,0.95);color:#0f0;padding:12px;border-radius:8px;font-family:monospace;font-size:11px;max-width:520px;max-height:300px;overflow:auto;border:1px solid #22c55e;'; document.body.appendChild(el); }
+    el.innerHTML += `<div style="${err?'color:#ff6b6b':''}">${new Date().toLocaleTimeString()} - ${msg}</div>`;
+    console.log('[ZIULEX V11]', msg);
+  }
 
-  const TABLES = {
-    'ziulex_clientes': 'clientes',
-    'ziulex_processos': 'processos', 
-    'ziulex_agenda': 'agenda',
-    'ziulex_financeiro': 'financeiro',
-    'ziulex_documentos': 'documentos'
-  };
-
-  async function sbRequest(table, method='GET', body=null, query=''){
-    const url = `${SB_URL}/rest/v1/${table}${query ? '?'+query : ''}`;
-    const opts = {
-      method,
-      headers: {
-        'apikey': SB_KEY,
-        'Authorization': 'Bearer '+SB_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation,resolution=merge-duplicates'
+  async function sbUpsert(table, payload){
+    try{
+      // GERA UUID VALIDO se id for texto curto tipo "cliente_123"
+      let idToUse = payload.id;
+      if(!idToUse || idToUse.length < 20 || idToUse.includes('_') || idToUse.includes('cliente') || idToUse.includes('temp')){
+        // Cria UUID v4 compatível
+        idToUse = crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{const r=Math.random()*16|0; const v=c=='x'?r:(r&0x3|0x8); return v.toString(16);});
+        payload.id = idToUse;
+        log(`⚠️ ID original "${payload.id}" inválido para UUID - gerado novo UUID: ${idToUse}`);
       }
-    };
-    if(body) opts.body = JSON.stringify(body);
-    const r = await fetch(url, opts);
-    const txt = await r.text();
-    if(!r.ok) throw new Error(`SUPABASE ${r.status}: ${txt.slice(0,300)}`);
-    try{ return JSON.parse(txt); }catch{ return txt; }
+      
+      const r = await fetch(`${SB_URL}/rest/v1/${table}`, {
+        method:'POST',
+        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=representation'},
+        body: JSON.stringify(payload)
+      });
+      const txt = await r.text();
+      if(!r.ok){
+        log(`❌ FALHA UP ${table} [${r.status}] ${txt.slice(0,500)}`, true);
+        if(txt.includes('row-level security')) log(`🔧 SOLUÇÃO: No Supabase SQL rode: alter table public.${table} disable row level security;`, true);
+        if(txt.includes('uuid')) log(`🔧 SOLUÇÃO: No Supabase SQL rode: alter table public.${table} alter column id type text using id::text;`, true);
+        return false;
+      }
+      log(`✅ UP OK ${table} -> ${payload.nome||payload.titulo||payload.id}`);
+      return true;
+    }catch(e){ log(`❌ ERRO FETCH ${table}: ${e.message}`, true); return false; }
   }
 
   async function syncDown(){
     for(let [lsKey, sbTable] of Object.entries(TABLES)){
       try{
-        const data = await sbRequest(sbTable, 'GET', null, 'select=*&limit=500&order=created_at.desc');
-        if(!Array.isArray(data)) continue;
-        if(data.length===0) continue;
+        const r = await fetch(`${SB_URL}/rest/v1/${sbTable}?select=*&order=created_at.desc&limit=300`, {headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY}});
+        if(!r.ok){ const t=await r.text(); log(`DOWN FALHA ${sbTable} [${r.status}] ${t.slice(0,200)}`, true); continue; }
+        const data = await r.json();
+        if(!Array.isArray(data) || data.length===0){ log(`DOWN ${sbTable}: nuvem vazia`); continue; }
         
-        // Converte formato Supabase -> formato ZIULEX
         let converted;
-        if(sbTable==='clientes'){
-          converted = data.map(d=>({id:d.id, nome:d.nome, name:d.nome, cpf:d.cpf||'', email:d.email||'', telefone:d.telefone||'', phone:d.telefone||'', escritorio:d.escritorio||'Matriz', escritorio_id:d.escritorio_id||'matriz', created_at:d.created_at}));
-        } else if(sbTable==='processos'){
-          converted = data.map(d=>({id:d.id, cnj:d.cnj||'', cliente:d.cliente_nome||'', cliente_nome:d.cliente_nome||'', status:d.status||'Ativo', escritorio:'Matriz'}));
-        } else if(sbTable==='agenda'){
-          converted = data.map(d=>({id:d.id, titulo:d.titulo||'', title:d.titulo||'', data:d.data||'', hora:d.hora||'', tipo:d.tipo||'', cliente:d.cliente_nome||''}));
-        } else if(sbTable==='financeiro'){
-          converted = data.map(d=>({id:d.id, cliente:d.cliente_nome||'', cliente_nome:d.cliente_nome||'', descricao:d.descricao||'', valor:d.valor||0, vencimento:d.vencimento||'', status:d.status||'Pendente', tipo:d.tipo||'Receita'}));
-        } else {
-          converted = data;
-        }
-        
-        // Só atualiza se nuvem tem mais dados que local (fonte da verdade é nuvem)
-        const local = JSON.parse(localStorage.getItem(lsKey)||'[]');
-        if(converted.length > 0){
-          window.__ziulex_syncing = true;
+        if(sbTable==='clientes') converted = data.map(d=>({id:d.id,nome:d.nome,name:d.nome,cpf:d.cpf||'',email:d.email||'',telefone:d.telefone||'',phone:d.telefone||'',escritorio:d.escritorio||'Matriz'}));
+        else if(sbTable==='processos') converted = data.map(d=>({id:d.id,cnj:d.cnj||'',cliente:d.cliente_nome||'',cliente_nome:d.cliente_nome||'',status:d.status||'Ativo'}));
+        else if(sbTable==='agenda') converted = data.map(d=>({id:d.id,titulo:d.titulo||'',title:d.titulo||'',data:d.data||'',hora:d.hora||'',tipo:d.tipo||'',cliente:d.cliente_nome||''}));
+        else if(sbTable==='financeiro') converted = data.map(d=>({id:d.id,cliente:d.cliente_nome||'',cliente_nome:d.cliente_nome||'',descricao:d.descricao||'',valor:d.valor||0,vencimento:d.vencimento||'',status:d.status||'Pendente',tipo:d.tipo||'Receita'}));
+        else converted=data;
+
+        const localStr = localStorage.getItem(lsKey)||'[]';
+        if(JSON.stringify(converted).length !== localStr.length){
+          window.__syncing=true;
           localStorage.setItem(lsKey, JSON.stringify(converted));
-          window.__ziulex_syncing = false;
-          console.log(`[SYNC DOWN] ${sbTable} -> ${converted.length} itens baixados da nuvem para ${lsKey}`);
-          if(lsKey==='ziulex_clientes'){
-            window.dispatchEvent(new Event('ziulex-clientes-updated'));
-            // Força atualização visual se o app expõe função
-            try{ if(window.renderClientes) window.renderClientes(); }catch{}
+          window.__syncing=false;
+          log(`⬇️ DOWN ${sbTable}: ${converted.length} itens da nuvem -> local`);
+          if(lsKey==='ziulex_clientes' && converted.length>0){
+            // Se local tinha 0 e nuvem tem dados, recarrega para mostrar (caso do Iuri)
+            const localCount = JSON.parse(localStr).length;
+            if(localCount===0){
+              log('🔄 Nuvem tem clientes mas local estava zerado (PC do Iuri) - recarregando...');
+              setTimeout(()=>location.reload(), 1000);
+            }
           }
         }
-      }catch(e){
-        console.error(`[SYNC DOWN] Erro ${sbTable}`, e.message);
-      }
+      }catch(e){ log(`DOWN erro ${sbTable}: ${e.message}`, true); }
     }
   }
 
-  async function syncUp(lsKey, arr){
-    const sbTable = TABLES[lsKey];
-    if(!sbTable) return;
-    if(!arr || !arr.length) return;
-    
-    // Pega apenas o último ou alterado
-    const last = arr[arr.length-1];
-    if(!last || !last.id) return;
-    
-    let payload;
-    if(sbTable==='clientes'){
-      payload = {id: String(last.id), nome: last.nome||last.name||'Sem nome', cpf: last.cpf||'', email: last.email||'', telefone: last.telefone||last.phone||'', escritorio: last.escritorio||'Matriz', escritorio_id: (last.escritorio_id||last.escritorio||'matriz').toLowerCase()};
-    } else if(sbTable==='processos'){
-      payload = {id: String(last.id), cnj: last.cnj||'', cliente_nome: last.cliente||last.cliente_nome||'', status: last.status||'Ativo', escritorio_id:'matriz'};
-    } else if(sbTable==='agenda'){
-      payload = {id: String(last.id), titulo: last.titulo||last.title||'', data: last.data||new Date().toISOString().slice(0,10), hora: last.hora||'', tipo: last.tipo||'', cliente_nome: last.cliente||''};
-    } else if(sbTable==='financeiro'){
-      payload = {id: String(last.id), cliente_nome: last.cliente||last.cliente_nome||'Geral', descricao: last.descricao||'', valor: Number(last.valor||0), vencimento: last.vencimento||new Date().toISOString().slice(0,10), status: last.status||'Pendente', tipo: last.tipo||'Receita'};
-    }
-    
-    if(!payload) return;
-    try{
-      await sbRequest(sbTable, 'POST', payload);
-      console.log(`[SYNC UP] ${sbTable} -> ${payload.nome||payload.titulo||payload.id} enviado para nuvem`);
-    }catch(e){
-      console.error(`[SYNC UP] Erro ${sbTable}`, e.message);
-      // Se erro 409 ou RLS, tenta sem id (gera uuid)
-      if(e.message.includes('RLS') || e.message.includes('401') || e.message.includes('403')){
-        console.warn('⚠️ RLS ainda bloqueando - rode: alter table public.'+sbTable+' disable row level security;');
-      }
-    }
-  }
-
-  // Intercepta salvamento - write-through para nuvem
   const origSet = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(k,v){
-    if(window.__ziulex_syncing){
-      return origSet(k,v);
-    }
+    if(window.__syncing) return origSet(k,v);
     origSet(k,v);
     if(TABLES[k]){
       try{
-        const arr = JSON.parse(v);
-        if(Array.isArray(arr) && arr.length){
-          syncUp(k, arr);
-        }
+        const arr=JSON.parse(v);
+        if(!Array.isArray(arr) || !arr.length) return;
+        const last=arr[arr.length-1];
+        if(!last || !last.id) return;
+        let payload;
+        if(k==='ziulex_clientes') payload={id:String(last.id),nome:last.nome||last.name||'Sem nome',cpf:last.cpf||'',email:last.email||'',telefone:last.telefone||last.phone||'',escritorio:'Matriz',escritorio_id:'matriz'};
+        else if(k==='ziulex_processos') payload={id:String(last.id),cnj:last.cnj||'',cliente_nome:last.cliente||last.cliente_nome||'',status:last.status||'Ativo',escritorio_id:'matriz'};
+        else if(k==='ziulex_agenda') payload={id:String(last.id),titulo:last.titulo||last.title||'',data:last.data||new Date().toISOString().slice(0,10),hora:last.hora||'',tipo:last.tipo||'',cliente_nome:last.cliente||''};
+        else if(k==='ziulex_financeiro') payload={id:String(last.id),cliente_nome:last.cliente||last.cliente_nome||'Geral',descricao:last.descricao||'',valor:Number(last.valor||0),vencimento:last.vencimento||new Date().toISOString().slice(0,10),status:last.status||'Pendente',tipo:last.tipo||'Receita'};
+        if(payload) sbUpsert(TABLES[k], payload);
       }catch{}
     }
   };
 
-  // Boot - baixa da nuvem primeiro
-  setTimeout(async ()=>{
-    console.log('[BOOT] Baixando dados da nuvem (fonte da verdade)...');
-    await syncDown();
-    // Migração: se local tem dados e nuvem vazia, sobe
-    for(let [lsKey, sbTable] of Object.entries(TABLES)){
-      try{
-        const local = JSON.parse(localStorage.getItem(lsKey)||'[]');
-        const cloud = await sbRequest(sbTable, 'GET', null, 'select=id&limit=1');
-        if(local.length>0 && cloud.length===0){
-          console.log(`[MIGRAÇÃO] ${lsKey} tem ${local.length} locais, nuvem vazia - migrando...`);
-          for(let item of local.slice(0,50)){
-            await syncUp(lsKey, [item]);
-            await new Promise(r=>setTimeout(r,100));
-          }
-        }
-      }catch{}
-    }
-  }, 1000);
-
-  // Realtime + Polling para equipe do Iuri
+  log('ZIULEX V11 FINAL - Iniciando sync equipe...');
+  setTimeout(syncDown, 1500);
   setInterval(syncDown, 4000);
 
-  // Tenta Realtime websocket para sync instantâneo entre estagiários
+  // Realtime para equipe
   try{
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.4/dist/umd/supabase.min.js';
-    s.onload = ()=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.4/dist/umd/supabase.min.js';
+    s.onload=()=>{
       try{
-        const c = supabase.createClient(SB_URL, SB_KEY);
-        c.channel('ziulex-equipe-iuri')
-          .on('postgres_changes', {event:'*', schema:'public', table:'clientes'}, ()=>syncDown())
-          .on('postgres_changes', {event:'*', schema:'public', table:'processos'}, ()=>syncDown())
-          .on('postgres_changes', {event:'*', schema:'public', table:'agenda'}, ()=>syncDown())
-          .on('postgres_changes', {event:'*', schema:'public', table:'financeiro'}, ()=>syncDown())
-          .subscribe((st)=>console.log('[REALTIME EQUIPE]', st));
+        const c=supabase.createClient(SB_URL, SB_KEY);
+        c.channel('ziulex-v11-equipe')
+          .on('postgres_changes',{event:'*',schema:'public',table:'clientes'},()=>{log('🔴 Realtime: cliente novo de outro PC!'); syncDown();})
+          .subscribe(st=>log('Realtime status: '+st));
       }catch{}
     };
     document.head.appendChild(s);
   }catch{}
-
-  console.log('%c ✅ ZIULEX V9 PRONTO - EQUIPE DO IURI SINCRONIZADA ', 'background:#16a34a;color:#fff;padding:8px;font-weight:bold;');
 })();
 </script>
 
@@ -871,11 +816,5 @@ console.log('ZIULEX FINAL 100% - 25 itens - Completo');
 })();
 </script>
 
-
-<div style="position:fixed;bottom:12px;right:12px;z-index:9999999;background:#16a34a;color:#fff;padding:8px 14px;border-radius:24px;font-family:Inter,system-ui;font-size:11px;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);">
-<span style="width:8px;height:8px;background:#fff;border-radius:50%;animation:blink 1s infinite"></span>
-<span><strong>SYNC EQUIPE</strong> • Nuvem • Iuri + estagiários</span>
-</div>
-<style>@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}</style>
 </body>
 </html>
